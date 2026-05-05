@@ -1,5 +1,6 @@
 import carla
 import time
+import random
 import numpy as np
 import networkx as nx
 
@@ -25,7 +26,22 @@ def main():
 
     # SPAWN
     bp = world.get_blueprint_library().filter("model3")[0]
-    spawn_pt = carla_map.get_spawn_points()[0]
+    # 1. Pegar todos os pontos de spawn e embaralhar a lista
+    spawn_points = carla_map.get_spawn_points()
+    random.shuffle(spawn_points)
+    
+    # 2. Tentar spawnar em cada ponto até encontrar um vazio
+    vehicle = None
+    for point in spawn_points:
+        vehicle = world.try_spawn_actor(vehicle_bp, point)
+        if vehicle is not None:
+            print(f"Sucesso! Carro spawnado no ponto: {point.location}")
+            break
+    
+    # 3. Verificação de segurança
+    if vehicle is None:
+        print("Erro: Não foi possível encontrar um ponto de spawn livre. Tente diminuir o tráfego.")
+        return
     vehicle = world.spawn_actor(bp, spawn_pt)
     
     # SPECTATOR (A tela que já está aberta)
