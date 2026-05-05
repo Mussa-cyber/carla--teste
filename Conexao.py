@@ -15,7 +15,6 @@ def main():
     world = client.get_world()
     carla_map = world.get_map()
     
-    # SETUP DO GRAFO A*
     print("Mapeando estradas...")
     graph = nx.DiGraph()
     node_locs = {}
@@ -24,38 +23,35 @@ def main():
         node_locs[w1.id], node_locs[w2.id] = w1.transform.location, w2.transform.location
         graph.add_edge(w1.id, w2.id, weight=w1.transform.location.distance(w2.transform.location))
 
-    # SPAWN
-    bp = world.get_blueprint_library().filter("model3")[0]
-    # 1. Pegar todos os pontos de spawn e embaralhar a lista
+    # --- CORREÇÃO DO SPAWN ---
+    blueprint_library = world.get_blueprint_library()
+    bp = blueprint_library.filter("model3")[0]
+    
     spawn_points = carla_map.get_spawn_points()
     random.shuffle(spawn_points)
     
-    # 2. Tentar spawnar em cada ponto até encontrar um vazio
     vehicle = None
     for point in spawn_points:
-        vehicle = world.try_spawn_actor(vehicle_bp, point)
+        # Tenta spawnar sem travar o código se houver colisão
+        vehicle = world.try_spawn_actor(bp, point)
         if vehicle is not None:
             print(f"Sucesso! Carro spawnado no ponto: {point.location}")
             break
     
-    # 3. Verificação de segurança
     if vehicle is None:
-        print("Erro: Não foi possível encontrar um ponto de spawn livre. Tente diminuir o tráfego.")
+        print("Erro: Não foi possível encontrar um ponto de spawn livre.")
         return
-    vehicle = world.spawn_actor(bp, spawn_pt)
-    
-    # SPECTATOR (A tela que já está aberta)
-    spectator = world.get_spectator()
+    # --------------------------
 
-    # AUTOPILOTO E SENSOR
+    spectator = world.get_spectator()
     tm = client.get_trafficmanager(8000)
     vehicle.set_autopilot(True, tm.get_port())
-    lidar_bp = world.get_blueprint_library().find('sensor.lidar.ray_cast')
+    
+    lidar_bp = blueprint_library.find('sensor.lidar.ray_cast')
     lidar_sensor = world.spawn_actor(lidar_bp, carla.Transform(carla.Location(x=1.6, z=1.7)), attach_to=vehicle)
 
     def lidar_callback(data):
         points = np.frombuffer(data.raw_data, dtype=np.dtype('f4')).reshape(-1, 4)
-        # Filtro de colisão frontal
         front = points[(points[:,0] > 0) & (points[:,0] < 12) & (np.abs(points[:,1]) < 1.5)]
         if len(front) > 10:
             print("A*: Obstáculo detectado! Recalculando...")
@@ -64,26 +60,25 @@ def main():
     lidar_sensor.listen(lidar_callback)
 
     try:
-        print("Iniciando seguimento de câmera. Volte para a janela do CARLA.")
+        print("Iniciando seguimento de câmera...")
         while True:
-            # Lógica de Câmera de Perseguição (Chase Cam)
             v_trans = vehicle.get_transform()
             fwd = v_trans.get_forward_vector()
             
-            # Posiciona a câmera 12 metros atrás e 5 metros acima do carro
+            # Câmera de perseguição dinâmica
             cam_loc = v_trans.location - fwd * 12 + carla.Location(z=5)
             cam_rot = v_trans.rotation
-            cam_rot.pitch = -20 # Inclina para baixo para ver o carro
+            cam_rot.pitch = -20 
             
             spectator.set_transform(carla.Transform(cam_loc, cam_rot))
-            time.sleep(0.01) # Alta frequência para suavidade
+            time.sleep(0.01)
 
     except KeyboardInterrupt:
         pass
     finally:
         print("Limpando simulação...")
-        lidar_sensor.destroy()
-        vehicle.destroy()
+        if 'lidar_sensor' in locals(): lidar_sensor.destroy()
+        if 'vehicle' in locals(): vehicle.destroy()
 
 if __name__ == '__main__':
     main()
