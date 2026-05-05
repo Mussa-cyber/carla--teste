@@ -4,103 +4,87 @@ import numpy as np
 import networkx as nx
 
 def dist_heuristica(n1, n2, locations):
-    """Função h(n) para o A*: Distância euclidiana entre dois nós."""
     p1 = locations[n1]
     p2 = locations[n2]
     return np.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2 + (p1.z - p2.z)**2)
 
 def main():
-    # 1. CONEXÃO E SETUP
+    # 1. CONEXÃO
     client = carla.Client("localhost", 2000)
-    client.set_timeout(10.0)
+    client.set_timeout(15.0)
     world = client.get_world()
     carla_map = world.get_map()
-    blueprint_library = world.get_blueprint_library()
-
-    # 2. CONSTRUÇÃO DO GRAFO DE NAVEGAÇÃO (Para o A*)
-    print("Mapeando a cidade para o algoritmo A*...")
-    topology = carla_map.get_topology()
+    
+    # 2. MAPEAMENTO PARA A* (Otimizado)
+    print("Gerando grafo de navegação...")
     graph = nx.DiGraph()
     node_locations = {}
-
-    for segment in topology:
+    for segment in carla_map.get_topology():
         wp1, wp2 = segment[0], segment[1]
-        node_locations[wp1.id] = wp1.transform.location
-        node_locations[wp2.id] = wp2.transform.location
-        dist = wp1.transform.location.distance(wp2.transform.location)
-        graph.add_edge(wp1.id, wp2.id, weight=dist)
+        node_locations[wp1.id], node_locations[wp2.id] = wp1.transform.location, wp2.transform.location
+        graph.add_edge(wp1.id, wp2.id, weight=wp1.transform.location.distance(wp2.transform.location))
 
-    # 3. SPAWN DO VEÍCULO E CÂMERA ESPECTADORA
+    # 3. SPAWN E FOCO IMEDIATO
+    blueprint_library = world.get_blueprint_library()
     vehicle_bp = blueprint_library.filter("model3")[0]
     spawn_point = carla_map.get_spawn_points()[0]
     vehicle = world.spawn_actor(vehicle_bp, spawn_point)
-
-    # Posicionar câmera para você ver o teste na interface
+    
+    # Pegar o Spectator (a câmera da tela já aberta)
     spectator = world.get_spectator()
-    spec_trans = carla.Transform(spawn_point.location + carla.Location(z=40), 
-                                 carla.Rotation(pitch=-90))
-    spectator.set_transform(spec_trans)
+    print("Veículo spawnado. Iniciando rastreamento de câmera...")
 
-    # 4. CONFIGURAR AUTOPILOTO (Traffic Manager)
+    # 4. AUTOPILOTO E SENSORES
     tm = client.get_trafficmanager(8000)
     vehicle.set_autopilot(True, tm.get_port())
-
-    # 5. CONFIGURAR SENSOR LIDAR
+    
     lidar_bp = blueprint_library.find('sensor.lidar.ray_cast')
     lidar_bp.set_attribute('range', '30')
-    lidar_bp.set_attribute('rotation_frequency', '20')
     lidar_sensor = world.spawn_actor(lidar_bp, carla.Transform(carla.Location(x=1.6, z=1.7)), attach_to=vehicle)
 
-    # 6. LÓGICA DO AGENTE COM A*
+    # 5. CALLBACK DO LIDAR (Lógica A*)
     def process_lidar(lidar_data):
         points = np.frombuffer(lidar_data.raw_data, dtype=np.dtype('f4'))
         points = np.reshape(points, (int(points.shape[0] / 4), 4))
+        frontend = points[(points[:, 0] > 0) & (points[:, 0] < 12) & (np.abs(points[:, 1]) < 1.5)]
         
-        # Filtro: Frente do carro
-        frontend_points = points[(points[:, 0] > 0) & (points[:, 0] < 15) & (points[:, 1] > -1.5) & (points[:, 1] < 1.5)]
-        
-        if frontend_points.shape[0] > 5: # Se houver pontos suficientes (obstáculo real)
-            min_dist = np.min(frontend_points[:, 0])
-            
-            if min_dist < 6.0:
-                print(f"!!! EMERGÊNCIA: Obstáculo a {min_dist:.1f}m. Parando.")
-                vehicle.apply_control(carla.VehicleControl(throttle=0.0, brake=1.0))
-            
-            elif min_dist < 15.0:
-                print(f"Obstáculo detectado a {min_dist:.1f}m. Recalculando rota com A*...")
-                
-                # A* na prática: Buscar waypoint atual e o alvo à frente
-                curr_wp = carla_map.get_waypoint(vehicle.get_location())
-                next_wps = curr_wp.next(20.0)
-                
-                if next_wps:
-                    target_wp = next_wps[0]
-                    try:
-                        # Executa a busca no grafo
-                        path = nx.astar_path(graph, curr_wp.id, target_wp.id, 
-                                             heuristic=lambda u, v: dist_heuristica(u, v, node_locations))
-                        print(f"Caminho A* encontrado! Seguindo {len(path)} nós.")
-                        tm.force_lane_change(vehicle, True) # Manobra de desvio
-                    except nx.NetworkXNoPath:
-                        print("A*: Nenhum caminho seguro encontrado.")
+        if len(frontend) > 10:
+            curr_wp = carla_map.get_waypoint(vehicle.get_location())
+            next_wps = curr_wp.next(15.0)
+            if next_wps:
+                try:
+                    nx.astar_path(graph, curr_wp.id, next_wps[0].id, 
+                                  heuristic=lambda u, v: dist_heuristica(u, v, node_locations))
+                    print("A*: Obstáculo à frente! Ajustando trajetória.")
+                    tm.force_lane_change(vehicle, True)
+                except:
+                    vehicle.apply_control(carla.VehicleControl(brake=1.0))
 
     lidar_sensor.listen(lambda data: process_lidar(data))
 
-    # 7. LOOP DE EXECUÇÃO
+    # 6. LOOP DE SEGUIMENTO (O "PULO DO GATO")
     try:
-        print("Agente Inteligente (A*) iniciado. Verifique a janela do CARLA.")
         while True:
-            # Atualizar câmera espectadora para seguir o carro
-            v_trans = vehicle.get_transform()
-            spectator.set_transform(carla.Transform(v_trans.location + carla.Location(z=30), 
-                                                 carla.Rotation(pitch=-90)))
-            time.sleep(0.1)
+            # Pegar a transformação atual do carro
+            v_transform = vehicle.get_transform()
+            
+            # Calcular a posição da câmera (Atrás e no Alto)
+            # -10 metros no eixo X (atrás) e +5 metros no eixo Z (cima)
+            # Usamos o vetor de direção do carro para a câmera estar sempre atrás dele
+            forward_vec = v_transform.get_forward_vector()
+            camera_location = v_transform.location - forward_vec * 10 + carla.Location(z=5)
+            
+            # Ajustar a rotação para olhar para o carro
+            camera_rotation = v_transform.rotation
+            camera_rotation.pitch = -20 # Olhar um pouco para baixo
+            
+            # Aplicar ao Spectator da tela aberta
+            spectator.set_transform(carla.Transform(camera_location, camera_rotation))
+            
+            time.sleep(0.02) # ~50 FPS de atualização de câmera
+            
     except KeyboardInterrupt:
-        pass
+        print("\nFinalizando...")
     finally:
-        print("\nLimpando atores...")
         lidar_sensor.destroy()
         vehicle.destroy()
-
-if __name__ == '__main__':
-    main()
