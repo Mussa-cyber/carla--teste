@@ -9,82 +9,65 @@ def dist_heuristica(n1, n2, locations):
     return np.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2 + (p1.z - p2.z)**2)
 
 def main():
-    # 1. CONEXÃO
     client = carla.Client("localhost", 2000)
     client.set_timeout(15.0)
     world = client.get_world()
     carla_map = world.get_map()
     
-    # 2. MAPEAMENTO PARA A* (Otimizado)
-    print("Gerando grafo de navegação...")
+    # SETUP DO GRAFO A*
+    print("Mapeando estradas...")
     graph = nx.DiGraph()
-    node_locations = {}
-    for segment in carla_map.get_topology():
-        wp1, wp2 = segment[0], segment[1]
-        node_locations[wp1.id], node_locations[wp2.id] = wp1.transform.location, wp2.transform.location
-        graph.add_edge(wp1.id, wp2.id, weight=wp1.transform.location.distance(wp2.transform.location))
+    node_locs = {}
+    for seg in carla_map.get_topology():
+        w1, w2 = seg[0], seg[1]
+        node_locs[w1.id], node_locs[w2.id] = w1.transform.location, w2.transform.location
+        graph.add_edge(w1.id, w2.id, weight=w1.transform.location.distance(w2.transform.location))
 
-    # 3. SPAWN E FOCO IMEDIATO
-    blueprint_library = world.get_blueprint_library()
-    vehicle_bp = blueprint_library.filter("model3")[0]
-    spawn_point = carla_map.get_spawn_points()[0]
-    vehicle = world.spawn_actor(vehicle_bp, spawn_point)
+    # SPAWN
+    bp = world.get_blueprint_library().filter("model3")[0]
+    spawn_pt = carla_map.get_spawn_points()[0]
+    vehicle = world.spawn_actor(bp, spawn_pt)
     
-    # Pegar o Spectator (a câmera da tela já aberta)
+    # SPECTATOR (A tela que já está aberta)
     spectator = world.get_spectator()
-    print("Veículo spawnado. Iniciando rastreamento de câmera...")
 
-    # 4. AUTOPILOTO E SENSORES
+    # AUTOPILOTO E SENSOR
     tm = client.get_trafficmanager(8000)
     vehicle.set_autopilot(True, tm.get_port())
-    
-    lidar_bp = blueprint_library.find('sensor.lidar.ray_cast')
-    lidar_bp.set_attribute('range', '30')
+    lidar_bp = world.get_blueprint_library().find('sensor.lidar.ray_cast')
     lidar_sensor = world.spawn_actor(lidar_bp, carla.Transform(carla.Location(x=1.6, z=1.7)), attach_to=vehicle)
 
-    # 5. CALLBACK DO LIDAR (Lógica A*)
-    def process_lidar(lidar_data):
-        points = np.frombuffer(lidar_data.raw_data, dtype=np.dtype('f4'))
-        points = np.reshape(points, (int(points.shape[0] / 4), 4))
-        frontend = points[(points[:, 0] > 0) & (points[:, 0] < 12) & (np.abs(points[:, 1]) < 1.5)]
-        
-        if len(frontend) > 10:
-            curr_wp = carla_map.get_waypoint(vehicle.get_location())
-            next_wps = curr_wp.next(15.0)
-            if next_wps:
-                try:
-                    nx.astar_path(graph, curr_wp.id, next_wps[0].id, 
-                                  heuristic=lambda u, v: dist_heuristica(u, v, node_locations))
-                    print("A*: Obstáculo à frente! Ajustando trajetória.")
-                    tm.force_lane_change(vehicle, True)
-                except:
-                    vehicle.apply_control(carla.VehicleControl(brake=1.0))
+    def lidar_callback(data):
+        points = np.frombuffer(data.raw_data, dtype=np.dtype('f4')).reshape(-1, 4)
+        # Filtro de colisão frontal
+        front = points[(points[:,0] > 0) & (points[:,0] < 12) & (np.abs(points[:,1]) < 1.5)]
+        if len(front) > 10:
+            print("A*: Obstáculo detectado! Recalculando...")
+            tm.force_lane_change(vehicle, True)
 
-    lidar_sensor.listen(lambda data: process_lidar(data))
+    lidar_sensor.listen(lidar_callback)
 
-    # 6. LOOP DE SEGUIMENTO (O "PULO DO GATO")
     try:
+        print("Iniciando seguimento de câmera. Volte para a janela do CARLA.")
         while True:
-            # Pegar a transformação atual do carro
-            v_transform = vehicle.get_transform()
+            # Lógica de Câmera de Perseguição (Chase Cam)
+            v_trans = vehicle.get_transform()
+            fwd = v_trans.get_forward_vector()
             
-            # Calcular a posição da câmera (Atrás e no Alto)
-            # -10 metros no eixo X (atrás) e +5 metros no eixo Z (cima)
-            # Usamos o vetor de direção do carro para a câmera estar sempre atrás dele
-            forward_vec = v_transform.get_forward_vector()
-            camera_location = v_transform.location - forward_vec * 10 + carla.Location(z=5)
+            # Posiciona a câmera 12 metros atrás e 5 metros acima do carro
+            cam_loc = v_trans.location - fwd * 12 + carla.Location(z=5)
+            cam_rot = v_trans.rotation
+            cam_rot.pitch = -20 # Inclina para baixo para ver o carro
             
-            # Ajustar a rotação para olhar para o carro
-            camera_rotation = v_transform.rotation
-            camera_rotation.pitch = -20 # Olhar um pouco para baixo
-            
-            # Aplicar ao Spectator da tela aberta
-            spectator.set_transform(carla.Transform(camera_location, camera_rotation))
-            
-            time.sleep(0.02) # ~50 FPS de atualização de câmera
-            
+            spectator.set_transform(carla.Transform(cam_loc, cam_rot))
+            time.sleep(0.01) # Alta frequência para suavidade
+
     except KeyboardInterrupt:
-        print("\nFinalizando...")
+        pass
     finally:
+        print("Limpando simulação...")
         lidar_sensor.destroy()
         vehicle.destroy()
+
+if __name__ == '__main__':
+    main()
