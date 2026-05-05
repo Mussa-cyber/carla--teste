@@ -27,7 +27,7 @@ def main():
         node_locs[w1.id], node_locs[w2.id] = w1.transform.location, w2.transform.location
         graph.add_edge(w1.id, w2.id, weight=w1.transform.location.distance(w2.transform.location))
 
-    # 3. SPAWN ALEATÓRIO COM PROTEÇÃO (90 CARROS NO TRÁFEGO)
+    # 3. SPAWN ALEATÓRIO COM PROTEÇÃO PARA EVITA COLISAOES (90 CARROS NO TRÁFEGO)
     bp = blueprint_library.filter("model3")[0]
     spawn_points = carla_map.get_spawn_points()
     random.shuffle(spawn_points)
@@ -43,11 +43,11 @@ def main():
         print("Erro: Não foi possível encontrar um ponto livre no tráfego denso.")
         return
 
-    # 4. CONFIGURAÇÃO DO TRAFFIC MANAGER (ESTABILIDADE PARA APRESENTAÇÃO)
+    # 4. CONFIGURAÇÃO DO TRAFFIC MANAGER
     tm = client.get_trafficmanager(8000)
     vehicle.set_autopilot(True, tm.get_port())
     
-    # Velocidade reduzida para ~30km/h (Ajuste para apresentação)
+    # Velocidade reduzida para ~30km/h (Ajustavel)
     tm.global_percentage_speed_difference(50.0) 
     tm.set_global_distance_to_leading_vehicle(3.0)
     # Evita que o TM mude de faixa sozinho, deixando para a nossa lógica A*
