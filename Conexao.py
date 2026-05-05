@@ -61,25 +61,28 @@ def main():
     def lidar_callback(data):
         points = np.frombuffer(data.raw_data, dtype=np.dtype('f4')).reshape(-1, 4)
         
-        # Filtro Frontal Estrito (Obstáculo na minha faixa)
-        front_obs = points[(points[:,0] > 0) & (points[:,0] < 12) & (np.abs(points[:,1]) < 1.0)]
+        # 1. Filtro Frontal: Pegar apenas o que está na altura de um carro (z entre -1.0 e 1.0)
+        # Isso evita que o sensor confunda o asfalto com um obstáculo
+        front_obs = points[(points[:,0] > 1.5) & (points[:,0] < 12) & 
+                           (np.abs(points[:,1]) < 1.0) & 
+                           (points[:,2] > -1.2)] # Ignora o chão
         
-        # Filtro Faixa Esquerda (Verifica se há carros ao lado antes de mudar)
-        # Analisa a área de 1.5m a 4.5m à esquerda do carro
-        left_lane_busy = points[(points[:,0] > -2) & (points[:,0] < 10) & (points[:,1] > 1.5) & (points[:,1] < 4.5)]
+        # 2. Filtro Faixa Esquerda (Calibrado):
+        # Aumentamos a altura mínima (z) para ignorar o asfalto e marcas viárias
+        left_lane_busy = points[(points[:,0] > -2) & (points[:,0] < 10) & 
+                                (points[:,1] > 1.8) & (points[:,1] < 4.5) & 
+                                (points[:,2] > -1.0)] # Garante que é um objeto alto
 
-        if len(front_obs) > 15:
-            print("Obstáculo detectado à frente.")
-            
-            # Decisão de Mudança de Faixa
-            if len(left_lane_busy) < 5:
-                print("A*: Caminho livre à esquerda. Iniciando ultrapassagem...")
-                tm.force_lane_change(vehicle, True) # Força a troca para a esquerda
+        if len(front_obs) > 20: # Aumentamos o limite para evitar falsos positivos
+            # Se houver poucos pontos no filtro lateral, a faixa está REALMENTE livre
+            if len(left_lane_busy) < 3: 
+                print("A*: Caminho livre à esquerda! Executando manobra...")
+                tm.force_lane_change(vehicle, True)
             else:
-                print("A*: Faixa esquerda ocupada. Reduzindo velocidade para evitar colisão.")
-                # Aplica freio se estiver muito perto e bloqueado
-                if np.min(front_obs[:, 0]) < 5.0:
-                    vehicle.apply_control(carla.VehicleControl(brake=0.6))
+                # Se ele entrar aqui repetidamente, vamos imprimir quantos pontos ele está vendo
+                # para sabermos o que está bloqueando a manobra
+                print(f"Bloqueado: {len(left_lane_busy)} pontos detectados na lateral.")
+                vehicle.apply_control(carla.VehicleControl(throttle=0.2, brake=0.3))
 
     lidar_sensor.listen(lidar_callback)
 
