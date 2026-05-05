@@ -11,7 +11,7 @@ def main():
     carla_map = world.get_map()
     blueprint_library = world.get_blueprint_library()
 
-    # 2. SPAWN ALEATÓRIO COM PROTEÇÃO CONTRA COLISÃO
+    # 2. SPAWN ALEATÓRIO (PROTEÇÃO CONTRA OS 90 CARROS)
     bp = blueprint_library.filter("model3")[0]
     spawn_points = carla_map.get_spawn_points()
     random.shuffle(spawn_points)
@@ -27,15 +27,19 @@ def main():
         print("Erro: Nenhum ponto de spawn livre encontrado.")
         return
 
-    # 3. CONFIGURAÇÃO DO TRAFFIC MANAGER (TM)
+    # 3. CONFIGURAÇÃO DO TRAFFIC MANAGER (TM) - MODO AGRESSIVO
     tm = client.get_trafficmanager(8000)
     vehicle.set_autopilot(True, tm.get_port())
 
-    tm.global_percentage_speed_difference(50.0)
-    tm.set_global_distance_to_leading_vehicle(2.5)
-    tm.auto_lane_change(vehicle, False)  # Desativa IA padrão — controlamos nós
+    # Reduzimos a distância para 0.5m para forçar o TM a aceitar manobras próximas
+    tm.set_global_distance_to_leading_vehicle(0.5)
+    tm.global_percentage_speed_difference(50.0) # ~30km/h para apresentação
+    tm.auto_lane_change(vehicle, False) 
+    
+    # Ignorar uma pequena % de colisão ajuda o TM a ter "coragem" de mudar de faixa
+    tm.ignore_vehicles_percentage(vehicle, 5)
 
-    # 4. SENSOR LIDAR
+    # 4. SENSOR LIDAR (FILTROS DE ALTO DESEMPENHO)
     lidar_bp = blueprint_library.find('sensor.lidar.ray_cast')
     lidar_bp.set_attribute('range', '30')
     lidar_bp.set_attribute('rotation_frequency', '25')
@@ -48,50 +52,51 @@ def main():
     def lidar_callback(data):
         points = np.frombuffer(data.raw_data, dtype=np.dtype('f4')).reshape(-1, 4)
 
-        # Filtro frontal: objetos à frente entre 1.5m e 12m, na largura da faixa
+        # FILTRO FRONTAL: Foca apenas em objetos na largura da faixa e acima do chão
         front_obs = points[
             (points[:, 0] > 1.5) & (points[:, 0] < 12) &
-            (np.abs(points[:, 1]) < 1.0) &
-            (points[:, 2] > -1.2)
+            (np.abs(points[:, 1]) < 1.2) &
+            (points[:, 2] > -1.1)
         ]
 
-        # Filtro faixa ESQUERDA: Y positivo no CARLA = esquerda do veículo
+        # FILTRO ESQUERDA (CALIBRADO): Expandimos a área para detectar o carro vizinho por inteiro
         left_lane_busy = points[
-            (points[:, 0] > -2) & (points[:, 0] < 10) &
-            (points[:, 1] > 1.8) & (points[:, 1] < 4.5) &
-            (points[:, 2] > -1.0)
+            (points[:, 0] > -5) & (points[:, 0] < 15) & 
+            (points[:, 1] > 1.5) & (points[:, 1] < 4.8) &
+            (points[:, 2] > -1.0) # Ignora o asfalto rigorosamente
         ]
 
-        # Filtro faixa DIREITA: Y negativo no CARLA = direita do veículo
+        # FILTRO DIREITA (CALIBRADO)
         right_lane_busy = points[
-            (points[:, 0] > -2) & (points[:, 0] < 10) &
-            (points[:, 1] > -4.5) & (points[:, 1] < -1.8) &
+            (points[:, 0] > -5) & (points[:, 0] < 15) &
+            (points[:, 1] > -4.8) & (points[:, 1] < -1.5) &
             (points[:, 2] > -1.0)
         ]
 
         if len(front_obs) > 20:
-            # Prioridade 1: tentar ultrapassar pela ESQUERDA
+            # DEBUG NO TERMINAL para você ver o que o sensor vê em tempo real
+            print(f"Obstáculo à frente! Analisando: Esq={len(left_lane_busy)} pts | Dir={len(right_lane_busy)} pts")
+
+            # Prioridade 1: ESQUERDA
             if len(left_lane_busy) < 3:
-                print("Caminho livre à ESQUERDA! Executando manobra...")
-                tm.force_lane_change(vehicle, True)   # True = esquerda
+                print(">>> EXECUTANDO MANOBRA PARA ESQUERDA <<<")
+                tm.force_lane_change(vehicle, True)
+                # Ajuda o carro a não travar por falta de torque
+                vehicle.apply_control(carla.VehicleControl(throttle=0.3))
 
-            # Prioridade 2: tentar ultrapassar pela DIREITA
+            # Prioridade 2: DIREITA
             elif len(right_lane_busy) < 3:
-                print("Esquerda ocupada. Caminho livre à DIREITA! Executando manobra...")
-                tm.force_lane_change(vehicle, False)  # False = direita
+                print(">>> EXECUTANDO MANOBRA PARA DIREITA <<<")
+                tm.force_lane_change(vehicle, False)
+                vehicle.apply_control(carla.VehicleControl(throttle=0.3))
 
-            # Ambas ocupadas: travar
             else:
-                print(
-                    f"Ambas as faixas ocupadas "
-                    f"(esq: {len(left_lane_busy)} pts | dir: {len(right_lane_busy)} pts). "
-                    f"A travar..."
-                )
+                print("Caminho bloqueado em ambas as faixas. Reduzindo velocidade.")
                 vehicle.apply_control(carla.VehicleControl(throttle=0.0, brake=0.5))
 
     lidar_sensor.listen(lidar_callback)
 
-    # 5. LOOP PRINCIPAL: CÂMERA DE PERSEGUIÇÃO
+    # 5. LOOP DE CÂMERA (CHASE CAM)
     spectator = world.get_spectator()
 
     try:
@@ -100,6 +105,7 @@ def main():
             v_trans = vehicle.get_transform()
             fwd = v_trans.get_forward_vector()
 
+            # Câmera 12m atrás e 5m acima para uma visão clara da ultrapassagem
             cam_loc = v_trans.location - fwd * 12 + carla.Location(z=5)
             cam_rot = v_trans.rotation
             cam_rot.pitch = -20
@@ -108,14 +114,12 @@ def main():
             time.sleep(0.01)
 
     except KeyboardInterrupt:
-        print("\nFinalizado.")
+        print("\nSimulação encerrada.")
     finally:
-        print("Limpando atores...")
-        if 'lidar_sensor' in locals():
-            lidar_sensor.destroy()
-        if 'vehicle' in locals():
-            vehicle.destroy()
-        print("Recursos liberados.")
+        print("Limpando atores do mundo...")
+        if 'lidar_sensor' in locals(): lidar_sensor.destroy()
+        if 'vehicle' in locals(): vehicle.destroy()
+        print("Finalizado com sucesso.")
 
 if __name__ == '__main__':
     main()
