@@ -14,6 +14,11 @@ def main():
     spawn_point = world.get_map().get_spawn_points()[0]
     vehicle = world.spawn_actor(vehicle_bp, spawn_point)
 
+    # ADICIONE ISSO PARA VER O CARRO:
+    spectator = world.get_spectator()
+    transform = vehicle.get_transform()
+    spectator.set_transform(carla.Transform(transform.location + carla.Location(z=50), carla.Rotation(pitch=-90)))
+
     # 3. CONFIGURAR TRAFFIC MANAGER (Navegação base)
     tm = client.get_trafficmanager(8000)
     tm.set_synchronous_mode(False)
