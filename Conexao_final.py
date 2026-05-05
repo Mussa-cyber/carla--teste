@@ -52,47 +52,45 @@ def main():
     def lidar_callback(data):
         points = np.frombuffer(data.raw_data, dtype=np.dtype('f4')).reshape(-1, 4)
 
-        # FILTRO FRONTAL: Foca apenas em objetos na largura da faixa e acima do chão
+        # 1. FILTRO FRONTAL (Aumentamos a sensibilidade para 30 pontos para confirmar um carro)
         front_obs = points[
             (points[:, 0] > 1.5) & (points[:, 0] < 12) &
-            (np.abs(points[:, 1]) < 1.2) &
-            (points[:, 2] > -1.1)
+            (np.abs(points[:, 1]) < 1.0) &
+            (points[:, 2] > -1.0) # Ignora mais o chão
         ]
 
-        # FILTRO ESQUERDA (CALIBRADO): Expandimos a área para detectar o carro vizinho por inteiro
+        # 2. FILTRO ESQUERDA (Aumentamos a tolerância de 3 para 10 pontos)
+        # Se houver menos de 10 pontos, consideramos a faixa livre (ruído de chão/poste)
         left_lane_busy = points[
-            (points[:, 0] > -5) & (points[:, 0] < 15) & 
-            (points[:, 1] > 1.5) & (points[:, 1] < 4.8) &
-            (points[:, 2] > -1.0) # Ignora o asfalto rigorosamente
+            (points[:, 0] > -3) & (points[:, 0] < 12) & 
+            (points[:, 1] > 1.8) & (points[:, 1] < 4.5) &
+            (points[:, 2] > -0.8) # Filtro de altura mais alto (ignora calçadas/meio-fio)
         ]
 
-        # FILTRO DIREITA (CALIBRADO)
+        # 3. FILTRO DIREITA
         right_lane_busy = points[
-            (points[:, 0] > -5) & (points[:, 0] < 15) &
-            (points[:, 1] > -4.8) & (points[:, 1] < -1.5) &
-            (points[:, 2] > -1.0)
+            (points[:, 0] > -3) & (points[:, 0] < 12) &
+            (points[:, 1] > -4.5) & (points[:, 1] < -1.8) &
+            (points[:, 2] > -0.8)
         ]
 
-        if len(front_obs) > 20:
-            # DEBUG NO TERMINAL para você ver o que o sensor vê em tempo real
-            print(f"Obstáculo à frente! Analisando: Esq={len(left_lane_busy)} pts | Dir={len(right_lane_busy)} pts")
+        if len(front_obs) > 25:
+            print(f"DEBUG: Esq={len(left_lane_busy)} | Dir={len(right_lane_busy)} | Front={len(front_obs)}")
 
-            # Prioridade 1: ESQUERDA
-            if len(left_lane_busy) < 3:
-                print(">>> EXECUTANDO MANOBRA PARA ESQUERDA <<<")
+            # Decisão com maior tolerância a ruído
+            if len(left_lane_busy) < 10: 
+                print(">>> MANOBRA: Esquerda Livre (Ruído ignorado) <<<")
                 tm.force_lane_change(vehicle, True)
-                # Ajuda o carro a não travar por falta de torque
-                vehicle.apply_control(carla.VehicleControl(throttle=0.3))
+                vehicle.apply_control(carla.VehicleControl(throttle=0.4)) # Torque extra
 
-            # Prioridade 2: DIREITA
-            elif len(right_lane_busy) < 3:
-                print(">>> EXECUTANDO MANOBRA PARA DIREITA <<<")
+            elif len(right_lane_busy) < 10:
+                print(">>> MANOBRA: Direita Livre <<<")
                 tm.force_lane_change(vehicle, False)
-                vehicle.apply_control(carla.VehicleControl(throttle=0.3))
+                vehicle.apply_control(carla.VehicleControl(throttle=0.4))
 
             else:
-                print("Caminho bloqueado em ambas as faixas. Reduzindo velocidade.")
-                vehicle.apply_control(carla.VehicleControl(throttle=0.0, brake=0.5))
+                print("Caminho Totalmente Bloqueado. Freando.")
+                vehicle.apply_control(carla.VehicleControl(throttle=0.0, brake=0.6))
 
     lidar_sensor.listen(lidar_callback)
 
