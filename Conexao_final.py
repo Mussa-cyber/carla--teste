@@ -52,7 +52,6 @@ def main():
     )
 
     def compute_brake(distance):
-        """Travagem progressiva com base na distância"""
         if distance < 4:
             return 1.0
         elif distance < 6:
@@ -86,17 +85,15 @@ def main():
             (points[:,2] > -1.0)
         ]
 
-        # DISTÂNCIA MAIS PRÓXIMA
         min_dist = None
         if len(front) > 0:
             min_dist = float(np.min(front[:,0]))
 
-        # 1. ESTÁ A MUDAR DE FAIXA?
         if state["is_changing_lane"]:
             if now - state["lane_change_start"] > state["lane_change_duration"]:
                 print("✔ Mudança de faixa concluída")
                 state["is_changing_lane"] = False
-            return  # não tomar novas decisões
+            return 
 
         # 2. EMERGÊNCIA
         if min_dist is not None and min_dist < 5:
@@ -132,7 +129,7 @@ def main():
                 state["lane_change_start"] = now
 
             else:
-                # Travagem suave
+                # Travagem
                 brake = compute_brake(min_dist)
                 print(f"Sem espaço. Travando suavemente ({brake})")
                 vehicle.apply_control(
